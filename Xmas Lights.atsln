@@ -1,0 +1,37 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 11.00
+# Atmel Studio Solution File, Format Version 11.00
+Project("{E66E83B9-2572-4076-B26E-6BE79FF3018A}") = "Xmas Lights", "Xmas Lights.cppproj", "{311D918B-8AF7-4F44-8957-FC3B06EF4E87}"
+EndProject
+Project("{E66E83B9-2572-4076-B26E-6BE79FF3018A}") = "PCA9685", "..\..\Arduino Libraries\PCA9685\PCA9685.cppproj", "{24ECAE2B-00C0-4248-89DB-73928E8DE7A2}"
+EndProject
+Project("{E66E83B9-2572-4076-B26E-6BE79FF3018A}") = "Unit_Tests", "..\..\Arduino Libraries\PCA9685\Unit_Tests\Unit_Tests.cppproj", "{09DFD8BD-A7C7-455E-B3E8-319BA1A58AB4}"
+EndProject
+Project("{E66E83B9-2572-4076-B26E-6BE79FF3018A}") = "Shaped Brightness Controller", "..\..\Arduino Libraries\Shaped Brightness Controller\Shaped Brightness Controller.cppproj", "{72C97B37-FCE2-4F6B-BE3C-A43B04FC1D94}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|AVR = Debug|AVR
+		Release|AVR = Release|AVR
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{311D918B-8AF7-4F44-8957-FC3B06EF4E87}.Debug|AVR.ActiveCfg = Debug|AVR
+		{311D918B-8AF7-4F44-8957-FC3B06EF4E87}.Debug|AVR.Build.0 = Debug|AVR
+		{311D918B-8AF7-4F44-8957-FC3B06EF4E87}.Release|AVR.ActiveCfg = Release|AVR
+		{311D918B-8AF7-4F44-8957-FC3B06EF4E87}.Release|AVR.Build.0 = Release|AVR
+		{24ECAE2B-00C0-4248-89DB-73928E8DE7A2}.Debug|AVR.ActiveCfg = Debug|AVR
+		{24ECAE2B-00C0-4248-89DB-73928E8DE7A2}.Debug|AVR.Build.0 = Debug|AVR
+		{24ECAE2B-00C0-4248-89DB-73928E8DE7A2}.Release|AVR.ActiveCfg = Release|AVR
+		{24ECAE2B-00C0-4248-89DB-73928E8DE7A2}.Release|AVR.Build.0 = Release|AVR
+		{09DFD8BD-A7C7-455E-B3E8-319BA1A58AB4}.Debug|AVR.ActiveCfg = Debug|AVR
+		{09DFD8BD-A7C7-455E-B3E8-319BA1A58AB4}.Release|AVR.ActiveCfg = Release|AVR
+		{09DFD8BD-A7C7-455E-B3E8-319BA1A58AB4}.Release|AVR.Build.0 = Release|AVR
+		{72C97B37-FCE2-4F6B-BE3C-A43B04FC1D94}.Debug|AVR.ActiveCfg = Debug|AVR
+		{72C97B37-FCE2-4F6B-BE3C-A43B04FC1D94}.Debug|AVR.Build.0 = Debug|AVR
+		{72C97B37-FCE2-4F6B-BE3C-A43B04FC1D94}.Release|AVR.ActiveCfg = Release|AVR
+		{72C97B37-FCE2-4F6B-BE3C-A43B04FC1D94}.Release|AVR.Build.0 = Release|AVR
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
