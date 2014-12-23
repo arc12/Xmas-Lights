@@ -20,6 +20,8 @@
 
 #include <IRremote.cpp>
 
+#include <EEPROM.cpp>
+#include "EEPROMUtils.cpp"
 #include "I2CUtils.cpp"
 #include <Wire.cpp>
 #include <twi.c>
@@ -31,6 +33,12 @@ void readSourceValues();
 void updateTGM();
 void programTriple(uint8_t rgb, uint8_t shape, int phase, uint8_t rateSrc, uint8_t scaleSrc, uint8_t tgSrc);
 void programAll(uint8_t shape, uint8_t rateSrc, uint8_t scaleSrc, uint8_t tgSrc);
+		
+		void printPatch(uint8_t led);
+		void printPatternBytes(uint8_t led);
+		void loadProgram(uint8_t programNumber);
+		uint8_t decodeNumIR(unsigned long irCode);
+
 
 /*
  * Place a direct direct copy of sketch (*.ino or *.pde) beneath this comment block.... except that you:
@@ -43,7 +51,10 @@ void programAll(uint8_t shape, uint8_t rateSrc, uint8_t scaleSrc, uint8_t tgSrc)
 #define DEBUG
 
 //number of LEDS in use. ShapedBrightnessController has a compilation #define max value = 9
-#define SBC_NUM_LEDS 3
+#define NUM_LEDS 3
+//number of LEDs determins EEPROM program size, which in turn determines the number of programs available
+#define PROG_BYTES (8+NUM_LEDS*8)
+#define MAX_PROG_NUM (int)(2040/PROG_BYTES) //assumes 2k EEPROM with 8 bytes of space at the start (byte 0 stores num LEDs)
 
 // Input wiring details. Which pin is connected to which logical input
 #define PIN_AUDIO A0 //audio level (ADC0)
@@ -60,41 +71,45 @@ void programAll(uint8_t shape, uint8_t rateSrc, uint8_t scaleSrc, uint8_t tgSrc)
 // array to hold source values, e.g. ADC readings, and the indeces of each source.
 //Most are re-populated periodically (but not necessarily on each loop) or on an event
 // Va;lues are always in the range 0-1023
-uint16_t srcVals[16+SBC_NUM_LEDS]={0,1023};//only set the values for ON and OFF, which are constants
+uint16_t srcVals[16+NUM_LEDS]={0,1023,512};//only set the values for ON, OFF, and HALF which are constants
 #define SRC_OFF 0 //permanently OFF, i.e. value = 0
 #define SRC_ON 1 //always ON, i.e. value =1023
-#define SRC_AUDIO 2 //audio level (ADC0)
-#define SRC_LEV1 3 //VR1 (ADC1)
-#define SRC_LEV2 4 //VR2 or thermister (ADC2)
-#define SRC_LEV3 5 //VR3 or LDR (ADC3)
-#define SRC_SW1 6 //switch 1
-#define SRC_SW2 7 //switch 2
-#define SRC_SW3 8 //switch 3
-#define SRC_IR_INT1 9 //IR controlled integer value #1
-#define SRC_IR_INT2 0xA //IR controlled integer value #2
-#define SRC_IR_INT3 0xB //IR controlled integer value #3
-#define SRC_IR_SW1 9 //IR controlled boolean #1
-#define SRC_IR_SW2 0xA //IR controlled boolean #2
-#define SRC_LFO 0xE //Low Freq osc (triangle wave)
-#define SRC_RND 0xF //Random number in range 0-1023
-#define SRC_TG_MASK_BASE 0x10 //srcVals index at which the trigger/gate mask values reside (there are SBC_NUM_LEDS of them).
+#define SRC_HALF 2 //always value = 512
+#define SRC_AUDIO 3 //audio level (ADC0)
+#define SRC_LEV1 4 //VR1 (ADC1)
+#define SRC_LEV2 5 //VR2 or thermister (ADC2)
+#define SRC_LEV3 6 //VR3 or LDR (ADC3)
+#define SRC_SW1 7 //switch 1 | IR controlled boolean #1
+#define SRC_SW2 8 //switch 2 | IR controlled boolean #2
+#define SRC_SW3 9 //switch 3 | IR controlled boolean #3
+#define SRC_IR_INT1 0xA //IR controlled integer value #1
+#define SRC_IR_INT2 0xB //IR controlled integer value #2
+#define SRC_IR_INT3 0xC //IR controlled integer value #3
+#define SRC_LFO 0xD //Low Freq osc (triangle wave)
+#define SRC_RND_1S 0xE //Random number in range 0-1023, changing every second
+#define SRC_RND_10S 0xF //Random number in range 0-1023, changing every 10 seconds
+#define SRC_TG_MASK_BASE 0x10 //srcVals index at which the trigger/gate mask values reside (there are NUM_LEDS of them).
 //NB TG_MASK is, in principle, available for rate and scale patches, but is NOT intended for use that way
 
 // array to hold the patches - i.e. the mapping from the values in srcVals to parameters passed to the ShapedBrightnessController
 // each LED has 3 parameters, with the precise details of how they affect the brightness over time being determined by the pattern
 //	setting in force for the LED (which may change over time if a sequence has been programmed)
-uint8_t patches[SBC_NUM_LEDS][3];//the value in each cell is an index into srcVals
+uint8_t patches[NUM_LEDS][3];//the value in each cell is an index into srcVals
 //the second index of patches:
 #define PAR_RATE 0 // - see ShapedBrightnessController.setRate()
 #define PAR_SCALE 1 //  - see ShapedBrightnessController.setScale()
 #define PAR_TG_IP 2 //trigger or gate input - see ShapedBrightnessController.setTriggerIP()
 // multiplier for patches[][PAR_RATE], +2 means bit shift the srcVal two places to the MSB, -2 means shift 2 places towards LSB
-signed char rateFactor[SBC_NUM_LEDS];
+signed char rateFactor[NUM_LEDS];
 
 //IR class and data
 IRrecv irrecv(PIN_IR);
 decode_results results;
-#define IR_TYPE "NEC" //IR message type
+//next 4 to store received commands
+unsigned long irLast;//used to read in the last received value
+unsigned long irCommand;//used to store the active command (i.e. the command that started a sequence of key presses)
+uint8_t irTens;//for numeric inputs, the decoded value in the tens column
+uint8_t irUnits;//ditto units
 // codes for remote control buttons. This is based on the ubiquitous "car MP3" sender, but the button names
 // as used in this code are generalised. The "car MP3" button names appear in the comment
 #define IR_N0 0xFF6897 //0
@@ -115,20 +130,29 @@ decode_results results;
 #define IR_PLUS  0xFFA857 //VOL+
 #define IR_MINUS 0xFFE01F //VOL-
 #define IR_PLAY 0xFFC23D //Play/Pause
-#define IR_TEST 0xFF906F //EQ
-//100+,NEC,FF9867
-//200+,NEC,FFB04F
+#define IR_PROG 0xFF906F //EQ
+#define IR_CANCEL 0xFF9867 //100+
+#define IR_OK 0xFFB04F //200+
+
+//Reading/writing programs from EEPROM
+uint8_t programCount;//number of programs in EEPROM
+uint8_t currentProgram;//the index of the currently-loaded program.
 
 //object for time-varying LED controllers
-ShapedBrightnessController sbc = ShapedBrightnessController(SBC_NUM_LEDS);
+ShapedBrightnessController sbc = ShapedBrightnessController(NUM_LEDS);
+
+//Random changes
+unsigned long lastRandChange1;
+unsigned long lastRandChange10;
 
 //A Low Frequency Osc (LFO) - triangle form - can be used as a SRC in a patch, but also has its freq controlled by SRC value via the special LFO patch
+uint16_t lfoRate=1;//rate of change.
 
 //The "trigger/gate mask" provides an on/off time-varying pattern (e.g. moving dot, bar, etc) that feeds SRC_TG_MASK_BASE+led
 //and can be used as a patch source. Its rate can be set by other SRC inputs.
 uint16_t tgMask=1;//stores the bit mask
-uint16_t tgMaskOver=1<<(SBC_NUM_LEDS-1); //if the mask ever gets >= this value then it has passed the top. consequent action varies
-uint16_t tgMaskMask=(1<<SBC_NUM_LEDS)-1; //tgMask is forced to = tgMask & tgMaskMask in some cases
+uint8_t runLength = NUM_LEDS;
+uint16_t tgMaskMask=(1<<NUM_LEDS)-1; //tgMask is forced to = tgMask & tgMaskMask in some cases
 uint16_t tgmCounter=0;//gets tgmRate added each tick. When exceeds 2048 the mask changes by one step and counter resets to 0
 uint16_t tgmRate=1;//rate of change.
 uint8_t tgmPattern=0;// stores the active change pattern - see the following #defines. //NB: top nibble assumed to hold modifiers, low nibble to code for basic pattern
@@ -153,38 +177,70 @@ void setup(){
 	
 	pinMode(PIN_ACT, OUTPUT);
 	
+	#ifdef DEBUG
+	Serial.begin(9600);
+	Serial.println("Start");
+	#endif
+	
 	//initialise the pwm
 	sbc.initialise();
 	
 	// Start the ir receiver
 	irrecv.enableIRIn();
 	
-	#ifdef DEBUG
-		Serial.begin(9600);
-		Serial.println("Start");
-	#endif
+	//check the EEPROM for programs
+	//first byte is number of LEDs in the programs. Must match NUM_LEDS otherwise there are 0 programs available.
+	if(EEPROM.read(0)==NUM_LEDS){
+		programCount = EEPROM.read(1);
+	}else{
+		//correct the error, and assert 0 programs
+		EEPROM.write(0,NUM_LEDS);
+		EEPROM.write(1,0);
+		programCount =0;
+	}
 	
-	//set a basic program. There are two parts, both remain unchanged at runtime.
-	//(a) defines the LED behaviour, is stored in the ShapedBrightnessController
-	//(b) defines the patching of "input" values to LED control parameters
-	//LED RED 1
-	sbc.setPattern(0, SBC_WAVESHAPE_SAW, 0);//saw wave
-	patches[0][PAR_RATE] = SRC_LEV1;//VR1 controls rate
-	rateFactor[0]=0;//rate is not shifted
-	patches[0][PAR_SCALE] = SRC_ON;// full scale brightness range
-	patches[0][PAR_TG_IP] =  SRC_ON;//the waveform change is un-gated
-	//LED GREEN 1
-	sbc.setPattern(1, SBC_WAVESHAPE_SAW, 683);//phase shifted 120 deg
-	patches[1][PAR_RATE] = SRC_LEV2;
-	rateFactor[1]=0;//rate is not shifted
-	patches[1][PAR_SCALE] = SRC_ON;// full scale brightness range
-	patches[1][PAR_TG_IP] =  SRC_ON;//the waveform change is un-gated
-	//LED BLUE 1
-	sbc.setPattern(2, SBC_WAVESHAPE_SAW, 1365);//phase shifted 240 deg
-	patches[2][PAR_RATE] = SRC_LEV3;
-	rateFactor[2]=0;//rate is not shifted
-	patches[2][PAR_SCALE] = SRC_ON;// full scale brightness range
-	patches[2][PAR_TG_IP] =  SRC_ON;//the waveform change is un-gated
+	//Load program 1 if available, otherwise a default program
+	if(programCount>0){
+		currentProgram=1;
+		loadProgram(1);
+	}else{
+		sbc.setPattern(0, SBC_WAVESHAPE_SAW + SBC_WSMOD_INVERT, 0);//saw wave
+		patches[0][PAR_RATE] = SRC_LEV1;//VR1 controls rate
+		rateFactor[0]=0;//rate is not shifted
+		patches[0][PAR_SCALE] = SRC_ON;// half scale brightness range
+		patches[0][PAR_TG_IP] =  SRC_ON;//the waveform change is un-gated
+		//LED GREEN 1
+		sbc.setPattern(1, SBC_WAVESHAPE_OFF, 0);
+		patches[1][PAR_RATE] = SRC_OFF;
+		rateFactor[1]=0;
+		patches[1][PAR_SCALE] = SRC_OFF;
+		patches[1][PAR_TG_IP] =  SRC_OFF;
+		//LED BLUE 1
+		sbc.setPattern(2, SBC_WAVESHAPE_OFF, 0);//phase shifted 240 deg
+		patches[2][PAR_RATE] = SRC_LEV3;
+		rateFactor[2]=0;
+		patches[2][PAR_SCALE] = SRC_OFF;
+		patches[2][PAR_TG_IP] =  SRC_OFF;
+	}
+	
+	////LED RED 1
+	//sbc.setPattern(0, SBC_WAVESHAPE_SAW, 0);//saw wave
+	//patches[0][PAR_RATE] = SRC_LEV1;//VR1 controls rate
+	//rateFactor[0]=0;//rate is not shifted
+	//patches[0][PAR_SCALE] = SRC_ON;// full scale brightness range
+	//patches[0][PAR_TG_IP] =  SRC_ON;//the waveform change is un-gated
+	////LED GREEN 1
+	//sbc.setPattern(1, SBC_WAVESHAPE_SAW, 683);//phase shifted 120 deg
+	//patches[1][PAR_RATE] = SRC_LEV2;
+	//rateFactor[1]=0;//rate is not shifted
+	//patches[1][PAR_SCALE] = SRC_ON;// full scale brightness range
+	//patches[1][PAR_TG_IP] =  SRC_ON;//the waveform change is un-gated
+	////LED BLUE 1
+	//sbc.setPattern(2, SBC_WAVESHAPE_SAW, 1365);//phase shifted 240 deg
+	//patches[2][PAR_RATE] = SRC_LEV3;
+	//rateFactor[2]=0;//rate is not shifted
+	//patches[2][PAR_SCALE] = SRC_ON;// full scale brightness range
+	//patches[2][PAR_TG_IP] =  SRC_ON;//the waveform change is un-gated	
 	
 	//flash activity pin to show we are alive
 	digitalWrite(PIN_ACT, HIGH);
@@ -202,6 +258,77 @@ void loop(){
 	// note that it is NOT necessary to pass the source values each tick; the previous vals remain in force until changed
 	uint16_t rate;
 	if((millis()-lastTickMillis) > 62){
+		
+		//check IR receiver.
+		if (irrecv.decode(&results)) {
+			irLast = results.value;
+			#ifdef DEBUG
+			Serial.println(irLast, HEX);//value is an unsigned long
+			#endif
+			irrecv.resume(); // Receive the next value
+			//only proceed if it was not a "repeat last value" code
+			if(irLast!=0xFFFFFFFF){
+				boolean loadOK=false;//gets set to true if prog is to be loaded (several routes to this situation)
+				//if current command is PROG then need up to two numbers terminated by OK (or cancel to finish)
+				if(irCommand == IR_PROG){
+					if(irLast == IR_OK){//go and load a program from EEPROM if a valid prog number was entered
+						uint8_t progNum=irTens*10 + irUnits;
+						if(progNum>0 && progNum<=programCount){
+							loadOK=true;
+							currentProgram=progNum;
+						}
+						irCommand=0;//also cancel the active command
+					}else if(irLast == IR_PLUS){
+						currentProgram++;
+						if(currentProgram>programCount){
+							currentProgram=1;
+						}
+						loadOK = true;
+					}else if (irLast == IR_MINUS){
+						currentProgram--;
+						if(currentProgram==0){
+							currentProgram=programCount;
+						}				
+						loadOK = true;		
+					}else if(irLast == IR_CANCEL){
+						irCommand = 0;
+					}else{
+						uint8_t irNumber = decodeNumIR(irLast);//gets the decimal number for the last key. returns 255 if not a number
+						#ifdef DEBUG
+						Serial.println(irNumber, DEC);
+						#endif
+						if(irNumber!=255){
+							irTens = irUnits;
+							irUnits=irNumber;
+							//blink off to ack the number
+							digitalWrite(PIN_ACT, LOW);
+							delay(200);
+							digitalWrite(PIN_ACT, HIGH);
+						}
+					}
+					//
+					if(loadOK){						
+						loadProgram(currentProgram);
+						irCommand=0;//also cancel the active command
+					}
+				}
+				
+				//does the last value start a PROG sequence? Only do it if there are programs.
+				if(irLast == IR_PROG && (programCount>0)){
+					irCommand = IR_PROG;
+					irTens = 0;
+					irUnits = 0;
+				}
+				
+				//turn the activity LED on while a sequence is expected and off when not
+				if(irCommand == 0){
+					digitalWrite(PIN_ACT, LOW);
+				}else{
+					digitalWrite(PIN_ACT, HIGH);
+				}
+			}
+		}
+
 		lastTickMillis=millis();
 		//update the LFO value
 		//-- to do
@@ -212,7 +339,7 @@ void loop(){
 		}
 		
 		//use the patches to set the LED change rate, brightness scale, or trigger/gate input
-		for(uint8_t led = 0; led< SBC_NUM_LEDS; led++){
+		for(uint8_t led = 0; led< NUM_LEDS; led++){
 			rate = srcVals[patches[led][PAR_RATE]];
 			if(rateFactor>0){//rateFactor scales the rate by factors of two
 				rate = rate << rateFactor[led];
@@ -231,7 +358,7 @@ void loop(){
 }
 
 //updates the trigger gate mask. This should be called each "tick" to update the mask internal counter,
-// and to set srcVals accordingly
+// and to set srcVals accordingly. i.e. it should be called before the patches are processed.
 void updateTGM(){
 	uint8_t tgmPattern2 = tgmPattern & 0xF;
 	//gets tgmRate added each tick. When exceeds 2048 the mask changes by one step and counter resets to 0
@@ -241,58 +368,73 @@ void updateTGM(){
 		 switch (tgmPattern2){
 			 case TGM_SINGLE:
 				tgMask = tgMask<<1;
+				if(tgMask==(uint16_t)(1<<runLength)){//top reset
+					tgMask=1;
+				}
 				break;
 			case TGM_GROW:
 				if(tgmAB){
-					tgMask = 1 + (tgMask<<1);
+					tgMask = tgMaskMask & (1 + (tgMask<<1));
+					if(tgMask==((uint16_t)(1<<runLength)-1)){//top bounce
+						tgmAB = !tgmAB;
+					}
 				}else{
 					tgMask = tgMask>>1;
+					if(tgMask==1){//bottom bounce
+						tgmAB = !tgmAB;
+					}
 				}
 				break;
 			case TGM_PASS:
 				if(tgmAB){
-					tgMask = 1 + (tgMask<<1);
-				}else{
-					tgMask = (tgMask<<1) & tgMaskMask;
-				}
+					tgMask = tgMaskMask & (1 + (tgMask<<1));
+					if(tgMask==((uint16_t)(1<<runLength)-1)){//top bounce
+						tgmAB = !tgmAB;
+					}
+					}else{
+						tgMask = (tgMask<<1) & tgMaskMask;
+						if(tgMask==(uint16_t)(1<<(runLength-1))){//bottom bounce
+							tgmAB = !tgmAB;
+						}
+					}
 				break;			
 			case TGM_DOUBLE:
 				tgMask = tgMask<<1;
 				if(tgMask==2){//fudge in bit0 if only bit1 set
 					tgMask=3;
 				}
+				tgMask = tgMaskMask & tgMask;
+				if(tgMask==0){//top reset (0 because tgMaskMask has already kicked in)
+					tgMask=1;
+				}
 				break;
 		 }
-		 //check if the pattern needs a reset or an AB bounce
-		 if( (tgMask>=tgMaskOver) || ((tgmPattern&TGM_TRIPLIFY) && (tgMask>=8) ) ){
-			 if( (tgmPattern2==TGM_SINGLE) || (tgmPattern2==TGM_DOUBLE) ){
-				tgMask = 1;			 
-			 }else{
-				 if(tgmAB){
-					 tgMask = 1;
-				 }
-				 tgmAB = !tgmAB;
-			 }
-		 }
-		 if(tgMask==0){//bottom bounce
-			 tgmAB = !tgmAB;
-		 }
+		 ////check if the pattern needs a reset or an AB bounce
+		 //if( (tgMask>=tgMaskOver) || ((tgmPattern&TGM_TRIPLIFY) && (tgMask>=8) ) ){
+			 //if( (tgmPattern2==TGM_SINGLE) || (tgmPattern2==TGM_DOUBLE) ){
+				//tgMask = 1;			 
+			 //}else{
+				 //if(tgmAB){
+					 //tgMask = 1;
+				 //}
+				 //tgmAB = !tgmAB;
+			 //}
+		 //}
+		 //if(tgMask==1){//bottom bounce
+			 //tgmAB = !tgmAB;
+		 //}
+		 
 		 //transfer mask to srcVals
-		 uint8_t j;
-		 for(uint8_t i=0; i<SBC_NUM_LEDS; i++){
-			if(tgmPattern&TGM_TRIPLIFY){
-				j=i%3;
-			}else{
-				j=i;
-			}
-			srcVals[SRC_TG_MASK_BASE+i]=(tgMask&(1<<j))?1023:0;		 
+		 for(uint8_t i=0; i<runLength; i++){
+			srcVals[SRC_TG_MASK_BASE+i]=(tgMask&(1<<i))?1023:0;		 
 		 }
 		 //reset counter
 		 tgmCounter = 0;
 	 }
 }
 
-//reads ADCs, check for IR and button events etc and updates the values in srcVals.
+//reads ADCs, check button events etc and updates the values in srcVals.
+//does not include IR control
 //excludes the trigger/gate mask
 void readSourceValues(){
 	srcVals[SRC_AUDIO] = 0; //TO DO	
@@ -303,16 +445,23 @@ void readSourceValues(){
 	srcVals[SRC_SW2] = digitalRead(PIN_SW2)?1023:0;
 	srcVals[SRC_SW3] = digitalRead(PIN_SW3)?1023:0;
 	
-	// IR to do
-	
-	srcVals[SRC_RND] = random(1024);//srcVals is uint16_t, random returns long - should auto-cast
+	//random changes at 1 and 10 seconds intervals
+	unsigned long t = millis();
+	if((t-lastRandChange1)>1000){
+		srcVals[SRC_RND_1S] = random(1024);//srcVals is uint16_t, random returns long - should auto-cast
+		lastRandChange1=t;
+	}
+	if((t-lastRandChange10)>10000){
+		srcVals[SRC_RND_10S] = random(1024);
+		lastRandChange10=t;
+	}	
 }
 
 // - ----------- programming helpers ------------
 // replicate a specified program to all LEDs
 // NB: if using the TG mask generator as a patch source, then use SRC_TG_MASK_BASE as a pseudo-source (the appropriate actual src that maps to the LED will be used)
 void programAll(uint8_t shape, uint8_t rateSrc, uint8_t scaleSrc, uint8_t tgSrc){
-	for(int led=0; led<SBC_NUM_LEDS; led++){
+	for(int led=0; led<NUM_LEDS; led++){
 		//main shape
 		sbc.setPattern(led, shape, 0);
 		//patches
@@ -342,5 +491,110 @@ void programTriple(uint8_t rgb, uint8_t shape, int phase, uint8_t rateSrc, uint8
 			patches[led][PAR_TG_IP] = tgSrc;
 		}
 		led++;
+	}
+}
+
+void printPatch(uint8_t led){
+	char outStr[5];
+	sprintf(outStr, "%02X", patches[led][PAR_RATE]); 
+	Serial.print(outStr);
+	sprintf(outStr, "%02X", rateFactor[led]);
+	Serial.print(outStr);
+	Serial.print(" ");
+	sprintf(outStr, "%02X", patches[led][PAR_SCALE]);
+	Serial.print(outStr);
+	sprintf(outStr, "%02X", patches[led][PAR_TG_IP]);
+	Serial.println(outStr);
+}
+
+void printPatternBytes(uint8_t led){
+	uint8_t buff[4];
+	sbc.getPatternProgBytes(led,buff);
+			
+	char outStr[5];
+	sprintf(outStr, "%02X", buff[0]);
+	Serial.print(outStr);
+	sprintf(outStr, "%02X", buff[1]);
+	Serial.print(outStr);
+	Serial.print(" ");
+	sprintf(outStr, "%02X", buff[2]);
+	Serial.print(outStr);
+	sprintf(outStr, "%02X", buff[3]);
+	Serial.println(outStr);
+}
+
+void loadProgram(uint8_t programNumber){
+	#ifdef DEBUG
+	Serial.print("Load Prog:");
+	Serial.println(programNumber);
+	#endif
+	
+	//program start address
+	word eAddr = 8 + PROG_BYTES*(programNumber-1);
+	//block buffer
+	uint8_t buff[4];
+	
+	//read in LFO and Trigger/gate mask settings
+	EEPROMUtils::loadBytes(&eAddr, buff, 4);
+	lfoRate = (uint16_t)buff[0];
+	EEPROMUtils::loadBytes(&eAddr, buff, 4);
+	tgmRate = (uint16_t)buff[0];
+	tgmPattern = buff[1];
+	tgMask = 1;
+	runLength = (tgmPattern&TGM_TRIPLIFY)?3:NUM_LEDS;
+	tgMaskMask=(1<<runLength)-1;
+	
+	//loop over LEDS for shape data
+	for(uint8_t led=0; led<NUM_LEDS; led++){		
+		EEPROMUtils::loadBytes(&eAddr, buff, 4);
+		sbc.setPatternFromProgBytes(led,buff);
+		#ifdef DEBUG
+		printPatternBytes(led);
+		#endif
+		
+		//EEPROMUtils::loadBytes(&eAddr, buff, 2);
+		//phase = EEPROMUtils::loadInt(&eAddr);
+		//sbc.setPattern(led, buff[0] , phase);
+	}
+
+	//loop over LEDs for patches
+	for(uint8_t led=0; led<NUM_LEDS; led++){
+		EEPROMUtils::loadBytes(&eAddr, buff, 4);
+		patches[led][PAR_RATE] = buff[0];
+		rateFactor[led]=buff[1];
+		patches[led][PAR_SCALE] = buff[2];
+		patches[led][PAR_TG_IP] = buff[3];
+		#ifdef DEBUG
+		printPatch(led);
+		#endif
+	}
+	
+}
+
+//convert an IR code into a decimal number, or return255 if code does not mean a number
+uint8_t decodeNumIR(unsigned long irCode){
+	switch (irCode){
+		case IR_N0:
+			return 0;
+		case IR_N1:
+			return 1;
+		case IR_N2:
+			return 2;
+		case IR_N3:
+			return 3;
+		case IR_N4:
+			return 4;
+		case IR_N5:
+			return 5;
+		case IR_N6:
+			return 6;
+		case IR_N7:
+			return 7;
+		case IR_N8:
+			return 8;
+		case IR_N9:
+			return 9;
+		default:
+			return 255;
 	}
 }

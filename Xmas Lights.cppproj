@@ -100,6 +100,8 @@
       <Value>../../../Arduino Libraries/PCA9685</Value>
       <Value>../../../Arduino Libraries/Shaped Brightness Controller</Value>
       <Value>C:\Program Files\Arduino\libraries\IRremote</Value>
+      <Value>../../../Arduino Libraries/EEPROMUtils</Value>
+      <Value>C:\Program Files\Arduino\libraries\EEPROM</Value>
     </ListValues>
   </avrgcccpp.compiler.directories.IncludePaths>
   <avrgcccpp.compiler.optimization.level>Optimize for size (-Os)</avrgcccpp.compiler.optimization.level>
@@ -123,6 +125,14 @@
     <Compile Include="sketch.cpp">
       <SubType>compile</SubType>
     </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="EEPROM Programs\" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="EEPROM Programs\basic1.hex">
+      <SubType>compile</SubType>
+    </None>
   </ItemGroup>
   <Import Project="$(AVRSTUDIO_EXE_PATH)\\Vs\\Compiler.targets" />
 </Project>
